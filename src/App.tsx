@@ -97,7 +97,7 @@ const DriveThumb = ({
   className?: string;
 }) => {
   const fileId = gid(video.url) || gid(video.id);
-  const urls = fileId ? getDriveThumbnailUrls(fileId) : [];
+  const urls = [video.thumb, ...(fileId ? getDriveThumbnailUrls(fileId) : [])].filter(Boolean) as string[];
   const [urlIdx, setUrlIdx] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -117,7 +117,7 @@ const DriveThumb = ({
     }
   };
 
-  const currentUrl = video.thumb || urls[urlIdx] || null;
+  const currentUrl = urls[urlIdx] || null;
 
   if (failed || !currentUrl) {
     return (
@@ -143,7 +143,6 @@ const DriveThumb = ({
         className={`${className} transition-all duration-500 ${loaded ? 'opacity-100' : 'opacity-0'}`}
         loading="lazy"
         referrerPolicy="no-referrer"
-        crossOrigin="anonymous"
         onLoad={() => setLoaded(true)}
         onError={handleError}
       />
@@ -259,31 +258,50 @@ const Coverflow = ({
   catId: string;
 }) => {
   const [idx, setIdx] = useState(0);
-  const touchStartX = useRef<number>(0);
-  const touchEndX = useRef<number>(0);
+  const [dragX, setDragX] = useState(0);
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
+  const swipeAxis = useRef<'x' | 'y' | null>(null);
+  const didSwipe = useRef(false);
 
   useEffect(() => {
     setIdx(0);
   }, [videos, catId]);
 
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 640);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const go = (d: number) => setIdx((i) => (i + d + videos.length) % videos.length);
+
   const handleTouchStart = (e: ReactTouchEvent) => {
-    touchStartX.current = e.targetTouches[0].clientX;
+    if (e.touches.length > 1) return;
+    touchStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    swipeAxis.current = null;
+    didSwipe.current = false;
   };
 
   const handleTouchMove = (e: ReactTouchEvent) => {
-    touchEndX.current = e.targetTouches[0].clientX;
+    if (!touchStart.current || e.touches.length > 1) return;
+    const dx = e.touches[0].clientX - touchStart.current.x;
+    const dy = e.touches[0].clientY - touchStart.current.y;
+    // Lock to the dominant direction so vertical page scrolling still works
+    if (!swipeAxis.current && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+      swipeAxis.current = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+    }
+    if (swipeAxis.current === 'x') setDragX(dx);
   };
 
   const handleTouchEnd = () => {
-    const diff = touchStartX.current - touchEndX.current;
-    const minSwipe = 50;
-    if (Math.abs(diff) > minSwipe) {
-      if (diff > 0) {
-        go(1); // swipe left = next
-      } else {
-        go(-1); // swipe right = prev
-      }
+    if (swipeAxis.current === 'x' && Math.abs(dragX) > 45) {
+      didSwipe.current = true;
+      go(dragX < 0 ? 1 : -1); // swipe left = next, swipe right = prev
     }
+    touchStart.current = null;
+    swipeAxis.current = null;
+    setDragX(0);
   };
 
   if (!videos || videos.length === 0) {
@@ -302,105 +320,138 @@ const Coverflow = ({
     );
   }
 
-  const go = (d: number) => setIdx((i) => (i + d + videos.length) % videos.length);
+  const n = videos.length;
+  // Tighter card spacing on mobile so side cards peek in without overflowing
+  const offsetPercent = isMobile ? 62 : 85;
+  const dragging = dragX !== 0;
+  const maxDots = 8;
+  const dotStart = n <= maxDots ? 0 : Math.min(Math.max(idx - Math.floor(maxDots / 2), 0), n - maxDots);
+  const dotIdxs = Array.from({ length: Math.min(n, maxDots) }, (_, k) => dotStart + k);
+
+  const navBtn =
+    'flex items-center justify-center rounded-full bg-white/90 dark:bg-[#2c2c2e]/90 glass text-apple-black dark:text-white border border-black/[.08] dark:border-white/[.12] shadow-[0_6px_20px_rgba(0,0,0,.12)] dark:shadow-[0_6px_20px_rgba(0,0,0,.5)] active:scale-90 transition-transform cursor-pointer';
 
   return (
-    <div 
+    <div
       key={catId}
-      className={`relative w-full max-w-2xl mx-auto h-[340px] sm:h-[420px] md:h-[480px] lg:h-[520px] flex items-center justify-center select-none animate-carousel-switch transition-all duration-300 ${
-        isTransitioning ? 'opacity-40 scale-[0.98]' : 'opacity-100 scale-100'
+      className={`w-full max-w-2xl mx-auto select-none animate-carousel-switch transition-opacity duration-300 ${
+        isTransitioning ? 'opacity-40' : 'opacity-100'
       }`}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
     >
-      {/* Nav arrows - tight to the cards */}
-      <button
-        onClick={() => go(-1)}
-        aria-label="Previous video"
-        className="hidden sm:flex absolute left-0 md:left-2 z-50 w-10 h-10 rounded-full bg-white/80 dark:bg-white/10 glass items-center justify-center text-apple-black dark:text-white hover:scale-110 active:scale-95 transition-transform shadow-md cursor-pointer"
+      <div
+        className="relative w-full h-[380px] sm:h-[420px] md:h-[480px] lg:h-[520px] flex items-center justify-center overflow-hidden touch-pan-y"
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchEnd}
       >
-        <LeftI c="w-[18px] h-[18px]" />
-      </button>
-      <button
-        onClick={() => go(1)}
-        aria-label="Next video"
-        className="hidden sm:flex absolute right-0 md:right-2 z-50 w-10 h-10 rounded-full bg-white/80 dark:bg-white/10 glass items-center justify-center text-apple-black dark:text-white hover:scale-110 active:scale-95 transition-transform shadow-md cursor-pointer"
-      >
-        <RightI c="w-[18px] h-[18px]" />
-      </button>
+        {/* Desktop nav arrows */}
+        <button
+          onClick={() => go(-1)}
+          aria-label="Previous video"
+          className={`hidden sm:flex absolute left-0 md:left-2 z-50 w-11 h-11 hover:scale-110 ${navBtn}`}
+        >
+          <LeftI c="w-[18px] h-[18px]" />
+        </button>
+        <button
+          onClick={() => go(1)}
+          aria-label="Next video"
+          className={`hidden sm:flex absolute right-0 md:right-2 z-50 w-11 h-11 hover:scale-110 ${navBtn}`}
+        >
+          <RightI c="w-[18px] h-[18px]" />
+        </button>
 
-      {/* Mobile swipe hint dots */}
-      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-50 flex sm:hidden gap-1.5">
-        {videos.map((_, i) => (
-          <button
-            key={i}
-            onClick={() => setIdx(i)}
-            className={`rounded-full transition-all duration-300 ${
-              i === idx 
-                ? 'w-6 h-2 bg-apple-blue' 
-                : 'w-2 h-2 bg-black/20 dark:bg-white/20'
-            }`}
-            aria-label={`Go to video ${i + 1}`}
-          />
-        ))}
-      </div>
+        <div className="relative w-full max-w-[220px] sm:max-w-[260px] md:max-w-[280px] h-full flex items-center justify-center">
+          {videos.map((v, i) => {
+            let diff = i - idx;
+            if (diff > n / 2) diff -= n;
+            if (diff < -n / 2) diff += n;
+            const ctr = diff === 0;
+            const abs = Math.abs(diff);
 
-      <div className="relative w-full max-w-[220px] sm:max-w-[260px] md:max-w-[280px] h-full flex items-center justify-center">
-        {videos.map((v, i) => {
-          let diff = i - idx;
-          const n = videos.length;
-          if (diff > n / 2) diff -= n;
-          if (diff < -n / 2) diff += n;
-          const ctr = diff === 0;
-          const abs = Math.abs(diff);
-
-          // Responsive offset - tighter on mobile
-          const offsetPercent = typeof window !== 'undefined' && window.innerWidth < 640 ? 70 : 85;
-
-          return (
-            <div
-              key={v.id || i}
-              onClick={() => (ctr ? onPlay(v) : setIdx(i))}
-              className={`absolute top-1/2 left-1/2 w-[180px] sm:w-[210px] md:w-[240px] lg:w-[260px] aspect-[9/16] rounded-[18px] sm:rounded-[22px] overflow-hidden cursor-pointer transition-all duration-500 ease-[cubic-bezier(0.25,1,0.5,1)] ${
-                ctr
-                  ? 'shadow-[0_20px_60px_rgba(0,0,0,.2)] dark:shadow-[0_20px_60px_rgba(0,0,0,.6)] ring-1 ring-black/5 dark:ring-white/15'
-                  : 'shadow-md hover:brightness-50'
-              }`}
-              style={{
-                transform: `translate(-50%,-50%) translateX(${diff * offsetPercent}%) scale(${ctr ? 1 : 0.82})`,
-                zIndex: 40 - abs,
-                opacity: abs > 1 ? 0 : 1,
-                filter: ctr ? 'brightness(1)' : 'brightness(.35)',
-                pointerEvents: abs > 1 ? 'none' : 'auto',
-              }}
-            >
-              <div className="absolute inset-0 bg-apple-card dark:bg-[#1c1c1e] overflow-hidden">
-                <DriveThumb
-                  video={v}
-                  className="absolute inset-0 w-full h-full object-cover"
-                />
-              </div>
+            return (
               <div
-                className={`absolute inset-0 bg-gradient-to-t from-black/85 via-black/15 to-transparent transition-opacity duration-300 ${
-                  ctr ? 'opacity-75' : 'opacity-90'
+                key={v.id || i}
+                onClick={() => {
+                  if (didSwipe.current) {
+                    didSwipe.current = false;
+                    return;
+                  }
+                  ctr ? onPlay(v) : setIdx(i);
+                }}
+                className={`absolute top-1/2 left-1/2 w-[200px] sm:w-[210px] md:w-[240px] lg:w-[260px] aspect-[9/16] rounded-[20px] sm:rounded-[22px] overflow-hidden cursor-pointer ease-[cubic-bezier(0.25,1,0.5,1)] ${
+                  dragging ? 'transition-none' : 'transition-all duration-500'
+                } ${
+                  ctr
+                    ? 'shadow-[0_20px_60px_rgba(0,0,0,.2)] dark:shadow-[0_20px_60px_rgba(0,0,0,.6)] ring-1 ring-black/5 dark:ring-white/15'
+                    : 'shadow-md hover:brightness-50'
                 }`}
-              />
-              <div className="absolute inset-0 z-10 flex flex-col items-center justify-end p-3 sm:p-5 text-center">
-                {ctr && (
-                  <div className="w-11 h-11 sm:w-14 sm:h-14 rounded-full bg-white text-black flex items-center justify-center mb-3 sm:mb-4 shadow-xl backdrop-blur-sm hover:scale-110 active:scale-95 transition-transform group">
-                    <PlayI c="w-5 h-5 sm:w-6 sm:h-6 ml-0.5 text-black" />
-                  </div>
-                )}
-                <h4 className="text-[14px] sm:text-[17px] font-semibold tracking-[-0.022em] text-white leading-tight line-clamp-2">
-                  {v.title}
-                </h4>
-                <p className="text-[10px] sm:text-mini text-white/60 mt-1 font-medium">Enough Editz</p>
+                style={{
+                  transform: `translate(-50%,-50%) translateX(calc(${diff * offsetPercent}% + ${dragX}px)) scale(${ctr ? 1 : 0.82})`,
+                  zIndex: 40 - abs,
+                  opacity: abs > 1 ? 0 : 1,
+                  filter: ctr ? 'brightness(1)' : 'brightness(.35)',
+                  pointerEvents: abs > 1 ? 'none' : 'auto',
+                }}
+              >
+                <div className="absolute inset-0 bg-apple-card dark:bg-[#1c1c1e] overflow-hidden">
+                  <DriveThumb
+                    video={v}
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+                </div>
+                <div
+                  className={`absolute inset-0 bg-gradient-to-t from-black/85 via-black/15 to-transparent transition-opacity duration-300 ${
+                    ctr ? 'opacity-75' : 'opacity-90'
+                  }`}
+                />
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-end p-3 sm:p-5 text-center">
+                  {ctr && (
+                    <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-white text-black flex items-center justify-center mb-3 sm:mb-4 shadow-xl backdrop-blur-sm hover:scale-110 active:scale-95 transition-transform group">
+                      <PlayI c="w-5 h-5 sm:w-6 sm:h-6 ml-0.5 text-black" />
+                    </div>
+                  )}
+                  <h4 className="text-[15px] sm:text-[17px] font-semibold tracking-[-0.022em] text-white leading-tight line-clamp-2">
+                    {v.title}
+                  </h4>
+                  <p className="text-[11px] sm:text-mini text-white/60 mt-1 font-medium">Enough Editz</p>
+                </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
+
+      {/* Mobile control bar: prev / position / next */}
+      {n > 1 && (
+        <div className="sm:hidden mt-4 px-6 flex items-center justify-center gap-4">
+          <button onClick={() => go(-1)} aria-label="Previous video" className={`w-12 h-12 ${navBtn}`}>
+            <LeftI c="w-5 h-5" />
+          </button>
+
+          <div className="flex flex-col items-center gap-2 min-w-[96px]">
+            <div className="flex items-center gap-1.5">
+              {dotIdxs.map((i) => (
+                <button
+                  key={i}
+                  onClick={() => setIdx(i)}
+                  aria-label={`Go to video ${i + 1}`}
+                  className={`rounded-full transition-all duration-300 ${
+                    i === idx ? 'w-5 h-1.5 bg-apple-blue' : 'w-1.5 h-1.5 bg-black/20 dark:bg-white/25'
+                  }`}
+                />
+              ))}
+            </div>
+            <span className="text-[12px] font-medium tabular-nums text-apple-gray">
+              {idx + 1} / {n}
+            </span>
+          </div>
+
+          <button onClick={() => go(1)} aria-label="Next video" className={`w-12 h-12 ${navBtn}`}>
+            <RightI c="w-5 h-5" />
+          </button>
+        </div>
+      )}
     </div>
   );
 };
@@ -811,7 +862,7 @@ export default function App() {
       {/* 9:16 Video Player Modal - fully responsive */}
       {playing && (
         <div
-          className="fixed inset-0 z-[200] flex items-center justify-center p-2 sm:p-4"
+          className="fixed inset-0 z-[200] flex items-center justify-center p-4 overscroll-contain"
           style={{ animation: 'rise .3s ease forwards' }}
         >
           <div
@@ -821,13 +872,17 @@ export default function App() {
           <button
             onClick={() => setPlaying(null)}
             aria-label="Close modal"
-            className="absolute top-3 right-3 sm:top-5 sm:right-5 z-[210] w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-black/[.06] dark:bg-white/[.1] hover:bg-black/[.1] dark:hover:bg-white/[.2] flex items-center justify-center transition-colors cursor-pointer"
+            className="absolute top-[max(0.75rem,env(safe-area-inset-top))] right-3 sm:top-5 sm:right-5 z-[220] w-10 h-10 rounded-full bg-black/[.06] dark:bg-white/[.1] hover:bg-black/[.1] dark:hover:bg-white/[.2] flex items-center justify-center transition-colors cursor-pointer"
           >
             <XI c="w-[18px] h-[18px] text-apple-black dark:text-white" />
           </button>
           <div
-            className="relative z-[210] w-full max-w-[280px] sm:max-w-[320px] md:max-w-[340px]"
-            style={{ animation: 'rise .45s cubic-bezier(.25,1,.5,1) forwards' }}
+            className="relative z-[210] w-full"
+            style={{
+              // Fit a 9:16 player inside the visible viewport on any phone, leaving room for the title
+              maxWidth: 'min(360px, calc(100vw - 2rem), calc((100dvh - 150px) * 9 / 16))',
+              animation: 'rise .45s cubic-bezier(.25,1,.5,1) forwards'
+            }}
           >
             <div className="w-full aspect-[9/16] bg-black rounded-[24px] sm:rounded-[36px] overflow-hidden shadow-2xl ring-1 ring-black/10 dark:ring-white/10">
               {playing.url ? (
@@ -846,10 +901,19 @@ export default function App() {
                 </div>
               )}
             </div>
-            <p className="text-center mt-4 sm:mt-5 text-[13px] sm:text-caption font-semibold text-apple-black dark:text-white line-clamp-1">
+            <p className="text-center mt-4 text-[14px] sm:text-caption font-semibold text-apple-black dark:text-white line-clamp-1">
               {playing.title}
             </p>
-            <p className="text-center text-[11px] sm:text-mini text-apple-gray mt-0.5">Enough Editz</p>
+            {gid(playing.url) && (
+              <a
+                href={`https://drive.google.com/file/d/${gid(playing.url)}/view`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-2 mx-auto flex w-fit items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-medium text-apple-blue hover:bg-apple-blue/10 transition-colors"
+              >
+                Video not loading? Open in Drive <ArrowI c="w-3.5 h-3.5" />
+              </a>
+            )}
           </div>
         </div>
       )}
